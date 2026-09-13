@@ -1,0 +1,75 @@
+/**
+Returns cloud masked Sentinel-2 imagery from surface reflectance dataset
+ */
+function maskS2clouds(image) {
+  var qa = image.select('QA60');
+
+  // Bits 10 and 11 are clouds and cirrus, respectively.
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+
+  // Both flags should be set to zero, indicating clear conditions.
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+      .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+
+  return image.updateMask(mask).divide(10000);
+}
+
+var aoi = table.geometry(); // Unified feature geometry
+
+// Explicit rectangular bounds for the export to prevent "unbounded image" error
+var exportBounds = table.geometry().bounds();
+
+// Filter collection for the current year (2026)
+var dataset2026 = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+                 .filterBounds(aoi)
+                 // Focus on a dry month window
+                 .filterDate('2026-06-01', '2026-08-31') 
+                 .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+                 .map(maskS2clouds);
+
+var composite2026 = dataset2026.median().clip(aoi);
+
+var visualization = {
+  min: 0.0,
+  max: 0.3,
+  bands: ['B4', 'B3', 'B2'],
+};
+
+Map.centerObject(composite2026, 7);
+Map.addLayer(composite2026, visualization, 'RGB 2026 (Current)');
+// Visualize AOI polygon
+Map.addLayer(table, {color: 'blue'}, 'AOI Polygon (Table 2)', false);
+
+/* Optional: Load data assets to...
+// Visualize actual corrected/snapped and original roads for comparison 
+// To ensure S2 imagery overlaps roadway data
+Map.addLayer(table3, {color: 'red'}, 'Actual Roads (Table 3)');
+Map.addLayer(table4, {color: 'white'}, 'Original OSM Roads (Table 4)');
+Map.addLayer(table5, {color: 'white'}, 'Original PrevisIA Roads (Table 5)');
+*/
+
+// Reproject EPSG:4326 WGS84 at a 10-meter degree scaled imagery before exporting
+var compositeWGS84 = composite2026.select(['B4', 'B3', 'B2']).reproject({
+  crs: 'EPSG:4326',
+  scale: 10 // Earth Engine translates this 10m request into the correct degree equivalent for EPSG:4326
+});
+
+// Export using matching CRS parameters
+Export.image.toDrive({
+  image: compositeWGS84,
+  description: 'Paragominas_Sentinel2_2026_WGS84',
+  folder: 'Amazonia_Hackathon_Paragominas_QField_Basemap_Sentinel2',
+  region: exportBounds,
+  crs: 'EPSG:4326',
+  scale: 10,
+  maxPixels: 1e13
+});
+
+// SCALE CAUSED MISALIGNMENT IN QGIS DESPITE AOI DRAWN IN QGIS and SAME CRS WGS84, FIX:
+
+// Tried to force a 10-meter pixel size into a geographic coordinate system 
+// without an explicit CRS. 
+// Reprojected the CRS WGS84 before exporting the 10m-scale imagery
+
+// Fix saved 5 minutes of processing time. 
